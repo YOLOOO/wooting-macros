@@ -18,10 +18,10 @@ type WootingAnalogVersionFn = unsafe extern "C" fn() -> u32;
 static SDK_LIBRARY: Lazy<Result<Library>> = Lazy::new(|| {
     // Try to load the DLL from common locations
     let dll_paths = vec![
-        "C:\\Program Files\\wooting-analog-sdk\\bin\\wooting_analog_sdk.dll",
+        "C:\\Program Files\\wooting-analog-sdk\\wooting_analog_sdk.dll",
         "wooting_analog_sdk.dll",  // Try current directory or system PATH
     ];
-    
+
     for path in dll_paths {
         match unsafe { Library::new(path) } {
             Ok(lib) => {
@@ -33,35 +33,37 @@ static SDK_LIBRARY: Lazy<Result<Library>> = Lazy::new(|| {
             }
         }
     }
-    
+
     bail!("Could not find or load wooting_analog_sdk.dll. Please ensure the Wooting Analog SDK is installed.")
 });
 
-/// Global SDK instance - ensures only one SDK initialization
-static SDK_INSTANCE: Lazy<Mutex<Option<WootingSDK>>> = Lazy::new(|| {
+/// Global SDK instance - shared Arc so callers never own an independent copy that
+/// could call wooting_analog_deinit when dropped between emulation sessions.
+static SDK_INSTANCE: Lazy<Mutex<Option<Arc<Mutex<WootingSDK>>>>> = Lazy::new(|| {
     Mutex::new(None)
 });
 
 /// Safe wrapper around the Wooting Analog SDK
-#[derive(Clone)]
 pub struct WootingSDK {
     initialized: bool,
 }
 
 impl WootingSDK {
-    /// Get or initialize the global SDK instance
+    /// Get or initialize the global SDK instance.
+    ///
+    /// Returns a clone of the shared Arc — all callers share the same underlying
+    /// WootingSDK, so the SDK is never deinitialized between emulation sessions.
     pub fn instance() -> Result<Arc<Mutex<WootingSDK>>> {
         let mut sdk_lock = SDK_INSTANCE.lock().map_err(|e| {
             anyhow::anyhow!("Failed to acquire SDK lock: {}", e)
         })?;
 
         if sdk_lock.is_none() {
-            *sdk_lock = Some(WootingSDK::new()?);
+            let sdk = WootingSDK::new()?;
+            *sdk_lock = Some(Arc::new(Mutex::new(sdk)));
         }
 
-        Ok(Arc::new(Mutex::new(
-            sdk_lock.as_ref().unwrap().clone()
-        )))
+        Ok(sdk_lock.as_ref().unwrap().clone())
     }
 
     /// Initialize the SDK
